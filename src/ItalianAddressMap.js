@@ -29,6 +29,7 @@
             this.isPickMode = false;
             
             this.currentStreetAddresses = null;
+            this.currentNearbyResults = null;
             this._lastTextMode = null;
             
             this._addControlButtons();
@@ -56,7 +57,10 @@
                         button.style.color = this.isPickMode ? '#0056b3' : '#333';
                         button.style.backgroundColor = this.isPickMode ? '#e7f4e4' : '#fff';
                         this.map.getContainer().style.cursor = this.isPickMode ? 'crosshair' : '';
-                        if (!this.isPickMode) this.candidateLayer.clearLayers();
+                        if (!this.isPickMode) {
+                            this.candidateLayer.clearLayers();
+                            this.currentNearbyResults = null;
+                        }
                     });
                     return container;
                 }
@@ -82,36 +86,22 @@
                 });
 
                 this.candidateLayer.clearLayers();
+                this.currentNearbyResults = results;
+                
                 if (results && results.length > 0) {
-                    const points = results.map((addr, index) => {
-                        const marker = L.circleMarker([addr.latitude, addr.longitude], {
-                            radius: 8,
-                            fillColor: index === 0 ? "#22c55e" : "#94a3b8",
-                            color: "#fff",
-                            weight: 2,
-                            opacity: 1,
-                            fillOpacity: 0.8
-                        }).addTo(this.candidateLayer);
-
-                        const popupContent = `
-                            <div style="padding: 5px">
-                                <strong>${addr.street_name}, ${addr.full_number}</strong><br>
-                                <small>${addr.municipality}</small><br>
-                                <button class="anncsu-confirm-btn" onclick="window._anncsuConfirm('${addr.id}')" style="margin-top:8px; cursor:pointer">Usa questo indirizzo</button>
-                            </div>
-                        `;
-                        marker.bindPopup(popupContent);
-                        if (index === 0) marker.openPopup();
-                        return marker;
+                    const currentZoom = this.map.getZoom();
+                    results.forEach((addr, index) => {
+                        this._addCandidateToMap(addr, index, currentZoom);
                     });
 
+                    // Auto-confirm window helper (global for simplicity in HTML popup)
                     window._anncsuConfirm = (id) => {
-                        const selected = results.find(r => r.id == id);
+                        const selected = this.currentNearbyResults.find(r => r.id == id);
                         if (selected) {
                             this.candidateLayer.clearLayers();
+                            this.currentNearbyResults = null;
                             this.isPickMode = false;
                             this.map.getContainer().style.cursor = '';
-                            // Find and update the control button color
                             const btn = this.map.getContainer().querySelector('.anncsu-pick-btn');
                             if (btn) { btn.style.color = '#333'; btn.style.backgroundColor = '#fff'; }
                             
@@ -119,10 +109,32 @@
                             this.showAddress(selected);
                         }
                     };
+
+                    if (!this._zoomListenerAdded) {
+                        this.map.on('zoomend', () => this._updateAddressMarkers());
+                        this._zoomListenerAdded = true;
+                    }
                 }
             } catch (err) {
                 console.error('Error during reverse geocoding:', err);
             }
+        }
+
+        _addCandidateToMap(addr, index, zoomLevel) {
+            const type = index === 0 ? 'candidate-prime' : 'candidate';
+            const marker = this._createAddressMarker(addr, zoomLevel, type);
+            marker.addTo(this.candidateLayer);
+
+            const popupContent = `
+                <div style="padding: 5px">
+                    <strong>${addr.street_name || ''}, ${addr.full_number}</strong><br>
+                    <small>${addr.municipality || ''}</small><br>
+                    <button class="anncsu-confirm-btn" onclick="window._anncsuConfirm('${addr.id}')" style="margin-top:8px; cursor:pointer">Usa questo indirizzo</button>
+                </div>
+            `;
+            marker.bindPopup(popupContent);
+            if (index === 0 && !this._isZooming) marker.openPopup();
+            return marker;
         }
 
         /**
@@ -151,7 +163,7 @@
 
                 addresses.forEach(addr => {
                     if (!addr.latitude || !addr.longitude) return;
-                    const marker = this._createAddressMarker(addr, currentZoom);
+                    const marker = this._createAddressMarker(addr, currentZoom, 'street');
                     marker.addTo(this.selectionLayer);
                     markers.push(marker);
                 });
@@ -170,26 +182,30 @@
             }
         }
 
-        _createAddressMarker(addr, zoomLevel) {
+        _createAddressMarker(addr, zoomLevel, type = 'street') {
             const latlng = [addr.latitude, addr.longitude];
             const numberText = addr.full_number || addr.number || 'SNC';
+            
+            let color = "#0056b3"; // Blue for street
+            if (type === 'candidate-prime') color = "#22c55e"; // Green for best match
+            if (type === 'candidate') color = "#94a3b8"; // Grey for other candidates
 
             if (zoomLevel >= 18) {
                 const icon = L.divIcon({
                     className: 'anncsu-civico-icon',
-                    html: `<div style="background: white; border: 1px solid #ccc; border-radius: 4px; padding: 2px 4px; font-size: 10px; font-weight: bold; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.2); text-align: center; color: #333;">${numberText}</div>`,
+                    html: `<div style="background: ${color}; border: 1px solid white; border-radius: 4px; padding: 2px 4px; font-size: 10px; font-weight: bold; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.3); text-align: center; color: white;">${numberText}</div>`,
                     iconSize: null,
-                    iconAnchor: [15, 10] // Approssimativamente al centro
+                    iconAnchor: [15, 10]
                 });
                 return L.marker(latlng, { icon: icon, title: numberText });
             } else {
                 const marker = L.circleMarker(latlng, {
-                    radius: 3,
-                    fillColor: "#0056b3",
+                    radius: type.startsWith('candidate') ? 6 : 3,
+                    fillColor: color,
                     color: "#fff",
                     weight: 1,
                     opacity: 0.8,
-                    fillOpacity: 0.6
+                    fillOpacity: 0.8
                 });
                 marker.bindTooltip(`<strong>${numberText}</strong>`, { direction: 'top', className: 'anncsu-civico-tooltip' });
                 return marker;
@@ -197,21 +213,30 @@
         }
 
         _updateAddressMarkers() {
-            if (!this.selectionLayer || !this.currentStreetAddresses) return;
-            
             const currentZoom = this.map.getZoom();
             const isTextMode = currentZoom >= 18;
             
             if (this._lastTextMode === isTextMode) return;
             this._lastTextMode = isTextMode;
+            this._isZooming = true;
 
-            this.selectionLayer.clearLayers();
+            // Update Street Addresses
+            if (this.selectionLayer && this.currentStreetAddresses) {
+                this.selectionLayer.clearLayers();
+                this.currentStreetAddresses.forEach(addr => {
+                    this._createAddressMarker(addr, currentZoom, 'street').addTo(this.selectionLayer);
+                });
+            }
+
+            // Update Candidate Results
+            if (this.candidateLayer && this.currentNearbyResults) {
+                this.candidateLayer.clearLayers();
+                this.currentNearbyResults.forEach((addr, index) => {
+                    this._addCandidateToMap(addr, index, currentZoom);
+                });
+            }
             
-            this.currentStreetAddresses.forEach(addr => {
-                if (!addr.latitude || !addr.longitude) return;
-                const marker = this._createAddressMarker(addr, currentZoom);
-                marker.addTo(this.selectionLayer);
-            });
+            this._isZooming = false;
         }
 
         /**
@@ -232,6 +257,7 @@
             if (this.selectionLayer) this.selectionLayer.clearLayers();
             if (this.candidateLayer) this.candidateLayer.clearLayers();
             this.currentStreetAddresses = null;
+            this.currentNearbyResults = null;
         }
 
         /**
@@ -240,7 +266,6 @@
         syncWithClient(config = {}) {
             const defaultOnStreet = this.options.showAllStreetPoints !== false;
             
-            // We can wrap the client's existing callbacks or use the onStateChange if available
             const originalOnStreet = this.client._callbacks.onStreetChange;
             this.client._callbacks.onStreetChange = (street) => {
                 if (originalOnStreet) originalOnStreet(street);
