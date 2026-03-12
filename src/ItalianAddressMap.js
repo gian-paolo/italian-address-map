@@ -8,6 +8,8 @@
     }
 }(typeof self !== 'undefined' ? self : this, function () {
     class ItalianAddressMap {
+        static version = '1.2.1';
+
         constructor(mapElementId, client, options = {}) {
             if (typeof L === 'undefined') {
                 throw new Error('Leaflet (L) is required but not found.');
