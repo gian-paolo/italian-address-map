@@ -8,7 +8,7 @@
     }
 }(typeof self !== 'undefined' ? self : this, function () {
     class ItalianAddressMap {
-        static version = '1.2.1';
+        static version = '1.2.2';
 
         constructor(mapElementId, client, options = {}) {
             if (typeof L === 'undefined') {
@@ -33,6 +33,7 @@
             this.currentStreetAddresses = null;
             this.currentNearbyResults = null;
             this._lastTextMode = null;
+            this._coordsRegistry = {};
             
             this._addControlButtons();
             this._setupEvents();
@@ -89,6 +90,7 @@
 
                 this.candidateLayer.clearLayers();
                 this.currentNearbyResults = results;
+                this._coordsRegistry = {}; // Reset for de-collision
                 
                 if (results && results.length > 0) {
                     const currentZoom = this.map.getZoom();
@@ -96,7 +98,6 @@
                         this._addCandidateToMap(addr, index, currentZoom);
                     });
 
-                    // Auto-confirm window helper (global for simplicity in HTML popup)
                     window._anncsuConfirm = (id) => {
                         const selected = this.currentNearbyResults.find(r => r.id == id);
                         if (selected) {
@@ -151,6 +152,7 @@
                 });
 
                 this.selectionLayer.clearLayers();
+                this._coordsRegistry = {};
                 
                 if (!addresses || addresses.length === 0) {
                     this.currentStreetAddresses = null;
@@ -185,9 +187,23 @@
         }
 
         _createAddressMarker(addr, zoomLevel, type = 'street') {
-            const latlng = [addr.latitude, addr.longitude];
+            let lat = parseFloat(addr.latitude);
+            let lng = parseFloat(addr.longitude);
             const numberText = addr.full_number || addr.number || 'SNC';
+
+            // De-collision logic (Jittering for identical coordinates)
+            const coordKey = `${lat.toFixed(6)},${lng.toFixed(6)}`;
+            if (this._coordsRegistry[coordKey]) {
+                const count = this._coordsRegistry[coordKey]++;
+                const angle = count * (Math.PI / 4); // Distribute in a circle
+                const radius = 0.00002 * count; // Approx 2 meters per step
+                lat += Math.cos(angle) * radius;
+                lng += Math.sin(angle) * radius;
+            } else {
+                this._coordsRegistry[coordKey] = 1;
+            }
             
+            const latlng = [lat, lng];
             let color = "#0056b3"; // Blue for street
             if (type === 'candidate-prime') color = "#22c55e"; // Green for best match
             if (type === 'candidate') color = "#94a3b8"; // Grey for other candidates
@@ -195,14 +211,14 @@
             if (zoomLevel >= 18) {
                 const icon = L.divIcon({
                     className: 'anncsu-civico-icon',
-                    html: `<div style="background: ${color}; border: 1px solid white; border-radius: 4px; padding: 2px 4px; font-size: 10px; font-weight: bold; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.3); text-align: center; color: white;">${numberText}</div>`,
-                    iconSize: null,
-                    iconAnchor: [15, 10]
+                    html: `<div style="background: ${color}; border: 1px solid white; border-radius: 4px; padding: 1px 4px; font-size: 9px; font-weight: bold; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.3); text-align: center; color: white; transform: translate(-50%, -50%);">${numberText}</div>`,
+                    iconSize: [0, 0], // Anchor precisely on the jittered point
+                    iconAnchor: [0, 0]
                 });
                 return L.marker(latlng, { icon: icon, title: numberText });
             } else {
                 const marker = L.circleMarker(latlng, {
-                    radius: type.startsWith('candidate') ? 6 : 3,
+                    radius: type.startsWith('candidate') ? 5 : 3,
                     fillColor: color,
                     color: "#fff",
                     weight: 1,
@@ -221,6 +237,7 @@
             if (this._lastTextMode === isTextMode) return;
             this._lastTextMode = isTextMode;
             this._isZooming = true;
+            this._coordsRegistry = {}; // Reset registry for new render pass
 
             // Update Street Addresses
             if (this.selectionLayer && this.currentStreetAddresses) {
@@ -260,6 +277,7 @@
             if (this.candidateLayer) this.candidateLayer.clearLayers();
             this.currentStreetAddresses = null;
             this.currentNearbyResults = null;
+            this._coordsRegistry = {};
         }
 
         /**
