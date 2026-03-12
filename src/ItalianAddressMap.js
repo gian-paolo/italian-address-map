@@ -157,8 +157,8 @@
                 });
 
                 if (markers.length > 0) {
-                    const group = L.featureGroup(markers);
-                    this.map.fitBounds(group.getBounds(), { padding: [30, 30] });
+                    const bounds = L.latLngBounds(markers.map(m => m.getLatLng()));
+                    this.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
                 }
 
                 if (!this._zoomListenerAdded) {
