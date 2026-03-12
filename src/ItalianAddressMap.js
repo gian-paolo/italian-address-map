@@ -21,12 +21,15 @@
 
             this.map = L.map(mapElementId).setView(this.options.center, this.options.zoom);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '&copy; <a href=\"https://www.openstreetmap.org/copyright\">OpenStreetMap</a> contributors'
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             }).addTo(this.map);
 
             this.selectionLayer = L.layerGroup().addTo(this.map);
             this.candidateLayer = L.layerGroup().addTo(this.map);
             this.isPickMode = false;
+            
+            this.currentStreetAddresses = null;
+            this._lastTextMode = null;
             
             this._addControlButtons();
             this._setupEvents();
@@ -38,7 +41,7 @@
                 onAdd: (map) => {
                     const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
                     const button = L.DomUtil.create('a', 'anncsu-pick-btn', container);
-                    button.innerHTML = '<i class=\"pi pi-map-marker\"></i>';
+                    button.innerHTML = '<i class="pi pi-map-marker"></i>';
                     button.title = 'Seleziona da mappa';
                     button.style.cursor = 'pointer';
                     button.style.backgroundColor = '#fff';
@@ -91,10 +94,10 @@
                         }).addTo(this.candidateLayer);
 
                         const popupContent = `
-                            <div style=\"padding: 5px\">
+                            <div style="padding: 5px">
                                 <strong>${addr.street_name}, ${addr.full_number}</strong><br>
                                 <small>${addr.municipality}</small><br>
-                                <button class=\"anncsu-confirm-btn\" onclick=\"window._anncsuConfirm('${addr.id}')\" style=\"margin-top:8px; cursor:pointer\">Usa questo indirizzo</button>
+                                <button class="anncsu-confirm-btn" onclick="window._anncsuConfirm('${addr.id}')" style="margin-top:8px; cursor:pointer">Usa questo indirizzo</button>
                             </div>
                         `;
                         marker.bindPopup(popupContent);
@@ -129,25 +132,86 @@
             try {
                 const addresses = await this.client._fetch('addresses', {
                     street_id: `eq.${streetId}`,
+                    latitude: 'not.is.null',
                     limit: 1000
                 });
 
                 this.selectionLayer.clearLayers();
-                if (addresses && addresses.length > 0) {
-                    addresses.forEach(addr => {
-                        L.circleMarker([addr.latitude, addr.longitude], {
-                            radius: 4,
-                            fillColor: "#0056b3",
-                            color: "#fff",
-                            weight: 1,
-                            opacity: 0.6,
-                            fillOpacity: 0.4
-                        }).addTo(this.selectionLayer).bindPopup(`<strong>${addr.full_number}</strong>`);
-                    });
+                
+                if (!addresses || addresses.length === 0) {
+                    this.currentStreetAddresses = null;
+                    return;
+                }
+
+                this.currentStreetAddresses = addresses;
+                const currentZoom = this.map.getZoom();
+                this._lastTextMode = currentZoom >= 18;
+                
+                const markers = [];
+
+                addresses.forEach(addr => {
+                    if (!addr.latitude || !addr.longitude) return;
+                    const marker = this._createAddressMarker(addr, currentZoom);
+                    marker.addTo(this.selectionLayer);
+                    markers.push(marker);
+                });
+
+                if (markers.length > 0) {
+                    const group = L.featureGroup(markers);
+                    this.map.fitBounds(group.getBounds(), { padding: [30, 30] });
+                }
+
+                if (!this._zoomListenerAdded) {
+                    this.map.on('zoomend', () => this._updateAddressMarkers());
+                    this._zoomListenerAdded = true;
                 }
             } catch (err) {
                 console.error('Error fetching street addresses:', err);
             }
+        }
+
+        _createAddressMarker(addr, zoomLevel) {
+            const latlng = [addr.latitude, addr.longitude];
+            const numberText = addr.full_number || addr.number || 'SNC';
+
+            if (zoomLevel >= 18) {
+                const icon = L.divIcon({
+                    className: 'anncsu-civico-icon',
+                    html: `<div style="background: white; border: 1px solid #ccc; border-radius: 4px; padding: 2px 4px; font-size: 10px; font-weight: bold; white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,0.2); text-align: center; color: #333;">${numberText}</div>`,
+                    iconSize: null,
+                    iconAnchor: [15, 10] // Approssimativamente al centro
+                });
+                return L.marker(latlng, { icon: icon, title: numberText });
+            } else {
+                const marker = L.circleMarker(latlng, {
+                    radius: 3,
+                    fillColor: "#0056b3",
+                    color: "#fff",
+                    weight: 1,
+                    opacity: 0.8,
+                    fillOpacity: 0.6
+                });
+                marker.bindTooltip(`<strong>${numberText}</strong>`, { direction: 'top', className: 'anncsu-civico-tooltip' });
+                return marker;
+            }
+        }
+
+        _updateAddressMarkers() {
+            if (!this.selectionLayer || !this.currentStreetAddresses) return;
+            
+            const currentZoom = this.map.getZoom();
+            const isTextMode = currentZoom >= 18;
+            
+            if (this._lastTextMode === isTextMode) return;
+            this._lastTextMode = isTextMode;
+
+            this.selectionLayer.clearLayers();
+            
+            this.currentStreetAddresses.forEach(addr => {
+                if (!addr.latitude || !addr.longitude) return;
+                const marker = this._createAddressMarker(addr, currentZoom);
+                marker.addTo(this.selectionLayer);
+            });
         }
 
         /**
@@ -155,15 +219,19 @@
          */
         showAddress(address) {
             this.selectionLayer.clearLayers();
+            this.currentStreetAddresses = null; // Disable bulk zoom updates
+            
             if (address && address.latitude && address.longitude) {
                 const marker = L.marker([address.latitude, address.longitude]).addTo(this.selectionLayer);
-                marker.bindPopup(`<strong>${address.full_number || 'Selezionato'}</strong>`).openPopup();
+                marker.bindPopup(`<strong>${address.full_number || address.number || 'Selezionato'}</strong>`).openPopup();
                 this.map.setView([address.latitude, address.longitude], 18);
             }
         }
 
         clearMarkers() {
-            this.markers.clearLayers();
+            if (this.selectionLayer) this.selectionLayer.clearLayers();
+            if (this.candidateLayer) this.candidateLayer.clearLayers();
+            this.currentStreetAddresses = null;
         }
 
         /**
